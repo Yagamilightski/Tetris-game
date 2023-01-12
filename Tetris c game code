@@ -1,0 +1,1435 @@
+#include <stdio.h> 
+
+#include <string.h> 
+
+#include <stdlib.h> 
+
+#include <time.h> 
+
+#include <conio.h> 
+
+#include <windows.h> 
+
+ 
+
+#ifdef _MSC_VER // The M$ compiler should give special care 
+
+ #if _MSC_VER <= 1200 // VC6 and below 
+
+ #error ???????VC6?! 
+
+ #else // VC6???? 
+
+ #if _MSC_VER >= 1600 // It is said that VC10 and above have stdint.h 
+
+  #include <stdint.h> 
+
+ #else // For versions below VC10, define int8_t and uint16_t by yourself 
+
+  typedef signed char int8_t; 
+
+  typedef unsigned short uint16_t; 
+
+ #endif 
+
+ #ifndef __cplusplus // For versions below VC10, define int8_t and uint16_t by yourself 
+
+  typedef int bool; 
+
+  #define true 1 
+
+  #define false 0 
+
+ #endif 
+
+ #endif 
+
+#else // Other compilers are easy to say 
+
+ #include <stdint.h> 
+
+ #ifndef __cplusplus // Compile without C++, need bool in stdbool.h 
+
+ #include <stdbool.h> 
+
+ #endif 
+
+#endif 
+
+ 
+
+// ============================================================================= 
+
+// 4 rotation states of 7 squares (4 bits in a row) 
+
+static const uint16_t gs_uTetrisTable[7][4] = 
+
+{ 
+
+ { 0x00F0U, 0x2222U, 0x00F0U, 0x2222U }, // I-Shaped 
+
+ { 0x0072U, 0x0262U, 0x0270U, 0x0232U }, // T-shaped 
+
+ { 0x0223U, 0x0074U, 0x0622U, 0x0170U }, // L-shaped 
+
+ { 0x0226U, 0x0470U, 0x0322U, 0x0071U }, // J-Shaped 
+
+ { 0x0063U, 0x0264U, 0x0063U, 0x0264U }, // Z-Shaped 
+
+ { 0x006CU, 0x0462U, 0x006CU, 0x0462U }, // S-Shaped 
+
+ { 0x0660U, 0x0660U, 0x0660U, 0x0660U } //  O-Shaped 
+
+}; 
+
+ 
+
+// ================================================== =============================== 
+
+// initial game pool 
+
+// Each element represents a line of the game pool, and the subscript with a large subscript is the bottom of the game pool 
+
+// Set 2 1s at both ends, and set 1 at the bottom 2, which is convenient for collision detection 
+
+// In this way, the width of the game pool is 12 columns 
+
+// If you want the traditional 10 columns, you only need to fill in two more 1s (0xE007), and of course the relevant parts of the display should be changed accordingly 
+
+// When an element is 0xFFFFU, it means that the line has been filled 
+
+// The top 4 lines are for the block, not displayed 
+
+// Remove the bottom 2 lines, and the height of the displayed game pool is 22 lines 
+
+static const uint16_t gs_uInitialTetrisPool[28] = 
+
+{ 
+
+ 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 
+
+ 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 
+
+ 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 
+
+ 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xC003U, 0xFFFFU, 0xFFFFU 
+
+}; 
+
+ 
+
+#define COL_BEGIN 2 
+
+#define COL_END 14 
+
+#define ROW_BEGIN 4 
+
+#define ROW_END 26 
+
+ 
+
+// ============================================================================= 
+
+typedef struct TetrisManager// This structure stores game related data 
+
+{ 
+
+ uint16_t pool[28]; // game pool 
+
+ int8_t x; // The x coordinate of the current block, where the coordinate is the upper left corner coordinate of the block 
+
+ int8_t y; // current block y coordinate 
+
+ int8_t type[3]; // current, next, and next-next block types 
+
+ int8_t orientation[3]; // current, next, and next-next block rotation states 
+
+ unsigned score; // Score 
+
+ unsigned erasedCount[4]; // number of transactions 
+
+ unsigned erasedTotal; // Total number of rows 
+
+ unsigned tetrisCount[7]; // Number of squares 
+
+ unsigned tetrisTotal; // total number of squares 
+
+ bool dead; // hang 
+
+} TetrisManager; 
+
+ 
+
+// ============================================================================= 
+
+typedef struct TetrisControl // This structure stores control related data 
+
+{ 
+
+ bool pause; //pause 
+
+ bool clockwise; // Rotation direction: clockwise is true 
+
+ int8_t direction; // Movement direction: 0 moves to the left, 1 moves to the right 
+
+  // The color of each grid in the game pool 
+
+  // Since this version is colored, color information cannot be stored with only game pool data 
+
+  // Of course, if you only implement the monochrome version, there is no need to use this array 
+
+ int8_t color[28][16]; 
+
+} TetrisControl; 
+
+ 
+
+HANDLE g_hConsoleOutput; // console output handle 
+
+ 
+
+// ============================================================================= 
+
+// function declaration 
+
+// If implemented using global variables, there is no need to pass parameters 
+
+void initGame(TetrisManager *manager, TetrisControl *control); // Initialize the game 
+
+void restartGame(TetrisManager *manager, TetrisControl *control); // restart the game 
+
+void giveTetris(TetrisManager *manager); // give a block 
+
+bool checkCollision(const TetrisManager *manager); // Impact checking 
+
+void insertTetris(TetrisManager *manager); // insert box 
+
+void removeTetris(TetrisManager *manager); //remove block 
+
+void horzMoveTetris(TetrisManager *manager, TetrisControl *control); // move block horizontally 
+
+void moveDownTetris(TetrisManager *manager, TetrisControl *control); // move block down 
+
+void rotateTetris(TetrisManager *manager, TetrisControl *control); // Rotate Cube 
+
+void dropDownTetris(TetrisManager *manager, TetrisControl *control); // The cube falls directly to the ground 
+
+bool checkErasing(TetrisManager *manager, TetrisControl *control); // Line detection 
+
+void keydownControl(TetrisManager *manager, TetrisControl *control, int key); // key pressed 
+
+void setPoolColor(const TetrisManager *manager, TetrisControl *control); // set color 
+
+void gotoxyWithFullwidth(short x, short y); // full width positioning 
+
+void printPoolBorder(); // Show game pool boundaries 
+
+void printTetrisPool(const TetrisManager *manager, const TetrisControl *control); // show game pool 
+
+void printCurrentTetris(const TetrisManager *manager, const TetrisControl *control); //show current block 
+
+void printNextTetris(const TetrisManager *manager); // Show next and next next squares 
+
+void printScore(const TetrisManager *manager); // Show score information 
+
+void runGame(TetrisManager *manager, TetrisControl *control); // run game 
+
+void printPrompting(); // Show hints 
+
+bool ifPlayAgain(); // Again 
+
+ 
+
+// ============================================================================= 
+
+//main function 
+
+int main() 
+
+{ 
+
+ TetrisManager tetrisManager; 
+
+ TetrisControl tetrisControl; 
+
+ 
+
+ initGame(&tetrisManager, &tetrisControl); // Initialize the game 
+
+ do 
+
+ { 
+
+ printPrompting(); // Show hints 
+
+ printPoolBorder(); // Show game pool boundaries 
+
+ runGame(&tetrisManager, &tetrisControl); // run game 
+
+ if (ifPlayAgain()) // Again 
+
+ { 
+
+  SetConsoleTextAttribute(g_hConsoleOutput, 0x7); 
+
+  system("cls"); // clear screen 
+
+  restartGame(&tetrisManager, &tetrisControl); //restart the game 
+
+ } 
+
+ else 
+
+ { 
+
+  break; 
+
+ } 
+
+ } while (1); 
+
+ gotoxyWithFullwidth(0, 0); 
+
+ CloseHandle(g_hConsoleOutput); 
+
+ return 0; 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// Initialize the game 
+
+void initGame(TetrisManager *manager, TetrisControl *control) 
+
+{ 
+
+ CONSOLE_CURSOR_INFO cursorInfo = { 1, FALSE }; // cursor information 
+
+ 
+
+ g_hConsoleOutput = GetStdHandle(STD_OUTPUT_HANDLE); // Get console output handle 
+
+ SetConsoleCursorInfo(g_hConsoleOutput, &cursorInfo); // Set the cursor to hide 
+
+ SetConsoleTitleA("Tetris Console Edition By: NEWPLAN"); 
+
+ 
+
+ restartGame(manager, control); 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// restart the game 
+
+void restartGame(TetrisManager *manager, TetrisControl *control) 
+
+{ 
+
+ memset(manager, 0, sizeof(TetrisManager)); // set all to 0 
+
+ 
+
+ //Initialize the game pool 
+
+ memcpy(manager->pool, gs_uInitialTetrisPool, sizeof(uint16_t [28])); 
+
+ srand((unsigned)time(NULL)); // set random seed 
+
+ 
+
+ manager->type[1] = rand() % 7; // Next 
+
+ manager->orientation[1] = rand() & 3; 
+
+ 
+
+ manager->type[2] = rand() % 7; // next next 
+
+ manager->orientation[2] = rand() & 3; 
+
+ 
+
+ memset(control, 0, sizeof(TetrisControl)); //set all to 0 
+
+ 
+
+ giveTetris(manager); // give the next block 
+
+ setPoolColor(manager, control); // set color 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// give a block 
+
+void giveTetris(TetrisManager *manager) 
+
+{ 
+
+ uint16_t tetris; 
+
+ 
+
+ manager->type[0] = manager->type[1]; // set the next block as current 
+
+ manager->orientation[0] = manager->orientation[1]; 
+
+ 
+
+ manager->type[1] = manager->type[2];// next next set the block as the next 
+
+ manager->orientation[1] = manager->orientation[2]; 
+
+ 
+
+ manager->type[2] = rand() % 7;//Randomly generate the next block 
+
+ manager->orientation[2] = rand() & 3; 
+
+ 
+
+ tetris = gs_uTetrisTable[manager->type[0]][manager->orientation[0]]; // current square 
+
+ 
+
+  // Set the y coordinate of the current block to ensure that only the bottom line of the block is displayed when it is just given 
+
+  // This implementation allows the player to quickly drop blocks into the top 4 rows that are not displayed 
+
+ if (tetris & 0xF000) 
+
+ { 
+
+ manager->y = 0; 
+
+ } 
+
+ else 
+
+ { 
+
+ manager->y = (tetris & 0xFF00) ? 1 : 2; 
+
+ } 
+
+ manager->x = 6; // Set the current block x coordinate 
+
+ 
+
+ if (checkCollision(manager)) // collision detected 
+
+ { 
+
+ manager->dead = true; // mark game over 
+
+ } 
+
+ else // no collision detected 
+
+ { 
+
+ insertTetris(manager); // Add the current block to the game pool 
+
+ } 
+
+ 
+
+ ++manager->tetrisTotal; // total number of squares 
+
+ ++manager->tetrisCount[manager->type[0]]; // Corresponding number of squares 
+
+ 
+
+ printNextTetris(manager); //show next block 
+
+ printScore(manager); // ?????? 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// Impact checking 
+
+bool checkCollision(const TetrisManager *manager) 
+
+{ 
+
+ // current square 
+
+ uint16_t tetris = gs_uTetrisTable[manager->type[0]][manager->orientation[0]]; 
+
+ uint16_t dest = 0; 
+
+ 
+
+ // Get the area of the current block in the game pool: 
+
+  // Small square information at coordinates x y of the game pool, stored in 16-bit unsigned numbers from low to high 
+
+ dest |= (((manager->pool[manager->y + 0] >> manager->x) << 0x0) & 0x000F); 
+
+ dest |= (((manager->pool[manager->y + 1] >> manager->x) << 0x4) & 0x00F0); 
+
+ dest |= (((manager->pool[manager->y + 2] >> manager->x) << 0x8) & 0x0F00); 
+
+ dest |= (((manager->pool[manager->y + 3] >> manager->x) << 0xC) & 0xF000); 
+
+ 
+
+ // If the current block overlaps (collides) with the target area, the result of bit AND is not 0 
+
+ return ((dest & tetris) != 0); 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// insert box 
+
+void insertTetris(TetrisManager *manager) 
+
+{ 
+
+ // current square 
+
+ uint16_t tetris = gs_uTetrisTable[manager->type[0]][manager->orientation[0]]; 
+
+ 
+
+ // The current block is taken out every 4 bits, and the bit is placed or moved to the corresponding position of the game pool, that is, the block is inserted 
+
+ manager->pool[manager->y + 0] |= (((tetris >> 0x0) & 0x000F) << manager->x); 
+
+ manager->pool[manager->y + 1] |= (((tetris >> 0x4) & 0x000F) << manager->x); 
+
+ manager->pool[manager->y + 2] |= (((tetris >> 0x8) & 0x000F) << manager->x); 
+
+ manager->pool[manager->y + 3] |= (((tetris >> 0xC) & 0x000F) << manager->x); 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// remove block 
+
+void removeTetris(TetrisManager *manager) 
+
+{ 
+
+ // current square 
+
+ uint16_t tetris = gs_uTetrisTable[manager->type[0]][manager->orientation[0]]; 
+
+ 
+
+ // The current block is taken out every 4 bits, and the bit is reversed according to the bit to the corresponding position in the game pool, that is, the removal of the block is completed 
+
+ manager->pool[manager->y + 0] &= ~(((tetris >> 0x0) & 0x000F) << manager->x); 
+
+ manager->pool[manager->y + 1] &= ~(((tetris >> 0x4) & 0x000F) << manager->x); 
+
+ manager->pool[manager->y + 2] &= ~(((tetris >> 0x8) & 0x000F) << manager->x); 
+
+ manager->pool[manager->y + 3] &= ~(((tetris >> 0xC) & 0x000F) << manager->x); 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// set color 
+
+void setPoolColor(const TetrisManager *manager, TetrisControl *control) 
+
+{ 
+
+// When displaying the game pool, it is necessary to judge that a certain square has a square in the game pool before displaying the color of the corresponding square 
+
+  // Here you can only set it, there is no need to clear it 
+
+  // Called when moving a block or giving a block 
+
+ 
+
+ int8_t i, x, y; 
+
+ 
+
+ // current square 
+
+ uint16_t tetris = gs_uTetrisTable[manager->type[0]][manager->orientation[0]]; 
+
+ 
+
+ for (i = 0; i < 16; ++i) 
+
+ { 
+
+ y = (i >> 2) + manager->y; // columns to be set 
+
+ if (y > ROW_END) // bottom limit exceeded 
+
+ { 
+
+  break; 
+
+ } 
+
+ x = (i & 3) + manager->x; // line to be set 
+
+ if ((tetris >> i) & 1) // The line to be detected by the small square belongs to the current square area 
+
+ { 
+
+  control->color[y][x] = (manager->type[0] | 8); //set color 
+
+ } 
+
+ } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// Rotate Cube 
+
+void rotateTetris(TetrisManager *manager, TetrisControl *control) 
+
+{ 
+
+ int8_t ori = manager->orientation[0]; // Record the original rotation state 
+
+ 
+
+ removeTetris(manager); // remove current block 
+
+ 
+
+ //Clockwise/counterclockwise 
+
+ manager->orientation[0] = (control->clockwise) ? ((ori + 1) & 3) : ((ori + 3) & 3); 
+
+ 
+
+ if (checkCollision(manager)) // collision detected 
+
+ { 
+
+ manager->orientation[0] = ori; // Return to original rotation state 
+
+ insertTetris(manager); // into the current block. Since the state has not changed, no need to set the color 
+
+ } 
+
+ else 
+
+ { 
+
+ insertTetris(manager); // put into current block 
+
+ setPoolColor(manager, control); // set color 
+
+ printCurrentTetris(manager, control); //show current block 
+
+ } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// move block horizontally 
+
+void horzMoveTetris(TetrisManager *manager, TetrisControl *control) 
+
+{ 
+
+ int x = manager->x; // Record the original column position 
+
+ removeTetris(manager); // remove current block 
+
+ control->direction == 0 ? (--manager->x) : (++manager->x); // move left/right 
+
+ 
+
+ if (checkCollision(manager)) // collision detected 
+
+ { 
+
+ manager->x = x; // Revert to original column position 
+
+ insertTetris(manager); //into the current block. Since the position has not changed, there is no need to set the color 
+
+ } 
+
+ else 
+
+ { 
+
+ insertTetris(manager); //put into current block 
+
+ setPoolColor(manager, control); // set color 
+
+ printCurrentTetris(manager, control); // show current block 
+
+  } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// move block down 
+
+void moveDownTetris(TetrisManager *manager, TetrisControl *control) 
+
+{ 
+
+ int8_t y = manager->y; //Record the original line position 
+
+ 
+
+ removeTetris(manager); // remove current block 
+
+ ++manager->y; // Move Downward 
+
+ 
+
+ if (checkCollision(manager)) // collision detected 
+
+ { 
+
+ manager->y = y; // Revert to original row position 
+
+ insertTetris(manager); // into the current block. Since the position has not changed, there is no need to set the color 
+
+ if (checkErasing(manager, control)) // Cancellation detected 
+
+ { 
+
+  printTetrisPool(manager, control); // show game pool 
+
+ } 
+
+ } 
+
+ else 
+
+ { 
+
+ insertTetris(manager); //put into current block 
+
+ setPoolColor(manager, control); // set color 
+
+ printCurrentTetris(manager, control); // show current block 
+
+ } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// The cube falls directly to the ground 
+
+void dropDownTetris(TetrisManager *manager, TetrisControl *control) 
+
+{ 
+
+ removeTetris(manager); // remove current block 
+
+ for (; manager->y < ROW_END; ++manager->y) //From top to bottom 
+
+ { 
+
+ if (checkCollision(manager)) //collision detected 
+
+ { 
+
+  break; 
+
+ } 
+
+ } 
+
+ --manager->y; // Move up one space, of course there is no collision 
+
+ 
+
+ insertTetris(manager); // put into current block 
+
+ setPoolColor(manager, control); // set color 
+
+ 
+
+ checkErasing(manager, control); // Detect cancellation 
+
+ printTetrisPool(manager, control); // show game pool 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// Line detection 
+
+bool checkErasing(TetrisManager *manager, TetrisControl *control) 
+
+{ 
+
+ static const unsigned scores[5] = { 0, 10, 30, 90, 150 }; // row score 
+
+ int8_t count = 0; 
+
+ int8_t k = 0, y = manager->y + 3; // Bottom-up detection 
+
+ 
+
+ do 
+
+ { 
+
+ if (y < ROW_END && manager->pool[y] == 0xFFFFU) // Within the valid area and a line is filled 
+
+ { 
+
+  ++count; 
+
+  // remove a row of blocks 
+
+  memmove(manager->pool + 1, manager->pool, sizeof(uint16_t) * y); 
+
+  // The elements of the color array are moved accordingly 
+
+  memmove(control->color[1], control->color[0], sizeof(int8_t [16]) * y); 
+
+ } 
+
+ else 
+
+ { 
+
+  --y; 
+
+  ++k; 
+
+ } 
+
+ } while (y >= manager->y && k < 4); 
+
+ 
+
+ manager->erasedTotal += count; // Total number of rows 
+
+ manager->score += scores[count]; // Score 
+
+ 
+
+ if (count > 0) 
+
+ { 
+
+ ++manager->erasedCount[count - 1]; // key pressed 
+
+ } 
+
+ 
+
+ giveTetris(manager); // give the next block 
+
+ setPoolColor(manager, control); // set color 
+
+ 
+
+ return (count > 0); 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// ??? 
+
+void keydownControl(TetrisManager *manager, TetrisControl *control, int key) 
+
+{ 
+
+ if (key == 13) // Pause/Unpause 
+
+ { 
+
+ control->pause = !control->pause; 
+
+ } 
+
+ 
+
+ if (control->pause) // Suspended state, no processing 
+
+ { 
+
+ return; 
+
+ } 
+
+ 
+
+ switch (key) 
+
+ { 
+
+ case 'w': case 'W': case '8': case 72: // ? 
+
+ control->clockwise = true; // clockwise rotation 
+
+ rotateTetris(manager, control); // Rotate Cube 
+
+ break; 
+
+ case 'a': case 'A': case '4': case 75: //left 
+
+ control->direction = 0; // move to the left 
+
+ horzMoveTetris(manager, control); // move block horizontally 
+
+ break; 
+
+ case 'd': case 'D': case '6': case 77: // right 
+
+ control->direction = 1; // move to the right 
+
+ horzMoveTetris(manager, control); // move block horizontally 
+
+ break; 
+
+ case 's': case 'S': case '2': case 80: // Down 
+
+ moveDownTetris(manager, control); // move block down 
+
+ break; 
+
+ case ' ': // landing directly 
+
+ dropDownTetris(manager, control); 
+
+ break; 
+
+ case '0': // reverse 
+
+ control->clockwise = false; // Anticlockwise rotation 
+
+ rotateTetris(manager, control); // Rotate Cube 
+
+ break; 
+
+ default: 
+
+ break; 
+
+ } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+//full width positioning 
+
+void gotoxyWithFullwidth(short x, short y) 
+
+{ 
+
+ static COORD cd; 
+
+ 
+
+ cd.X = (short)(x << 1); 
+
+ cd.Y = y; 
+
+ SetConsoleCursorPosition(g_hConsoleOutput, cd); 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// Show game pool boundaries 
+
+void printPoolBorder() 
+
+{ 
+
+ int8_t y; 
+
+ 
+
+ SetConsoleTextAttribute(g_hConsoleOutput, 0xF0); 
+
+ for (y = ROW_BEGIN; y < ROW_END; ++y) // top 4 rows and bottom 2 rows are not displayed 
+
+ { 
+
+ gotoxyWithFullwidth(10, y - 3); 
+
+ printf("%2s", ""); 
+
+ gotoxyWithFullwidth(23, y - 3); 
+
+ printf("%2s", ""); 
+
+ } 
+
+ 
+
+ gotoxyWithFullwidth(10, y - 3); // bottom border 
+
+ printf("%28s", ""); 
+
+} 
+
+ 
+
+// A square positioned in the game pool 
+
+#define gotoxyInPool(x, y) gotoxyWithFullwidth(x + 9, y - 3) 
+
+ 
+
+// ============================================================================= 
+
+// show game pool 
+
+void printTetrisPool(const TetrisManager *manager, const TetrisControl *control) 
+
+{ 
+
+ int8_t x, y; 
+
+ 
+
+ for (y = ROW_BEGIN; y < ROW_END; ++y) //top 4 rows and bottom 2 rows are not displayed 
+
+ { 
+
+ gotoxyInPool(2, y); //Point to a square in the game pool 
+
+ for (x = COL_BEGIN; x < COL_END; ++x) //Do not show left and right borders 
+
+ { 
+
+  if ((manager->pool[y] >> x) & 1) // The game pool has squares in this square 
+
+  { 
+
+  // Display a solid square with the corresponding color 
+
+  SetConsoleTextAttribute(g_hConsoleOutput, control->color[y][x]); 
+
+  printf(" #"); 
+
+  } 
+
+  else // no squares, display blank 
+
+  { 
+
+  SetConsoleTextAttribute(g_hConsoleOutput, 0); 
+
+  printf("%2s", ""); 
+
+  } 
+
+ } 
+
+ } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// show current block 
+
+void printCurrentTetris(const TetrisManager *manager, const TetrisControl *control) 
+
+{ 
+
+ int8_t x, y; 
+
+ 
+
+ // Display the current block is called after moving, in order to erase the block before moving, the display area needs to be expanded 
+
+  // no need to expand down since no move up 
+
+ y = (manager->y > ROW_BEGIN) ? (manager->y - 1) : ROW_BEGIN; //expand one space up 
+
+ for (; y < ROW_END && y < manager->y + 4; ++y) 
+
+ { 
+
+ x = (manager->x > COL_BEGIN) ? (manager->x - 1) : COL_BEGIN; //expand left 
+
+ for (; x < COL_END && x < manager->x + 5; ++x) // Extend right one space 
+
+ { 
+
+  gotoxyInPool(x, y); // Point to a square in the game pool 
+
+  if ((manager->pool[y] >> x) & 1) //The game pool has squares in this square 
+
+   { 
+
+  // Display a solid square with the corresponding color 
+
+  SetConsoleTextAttribute(g_hConsoleOutput, control->color[y][x]); 
+
+  printf(" #"); 
+
+  } 
+
+  else // no squares, display blank 
+
+  { 
+
+  SetConsoleTextAttribute(g_hConsoleOutput, 0); 
+
+  printf("%2s", ""); 
+
+  } 
+
+ } 
+
+ } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// Show next and next next squares 
+
+void printNextTetris(const TetrisManager *manager) 
+
+{ 
+
+ int8_t i; 
+
+ uint16_t tetris; 
+
+ 
+
+ /* frame 
+
+ SetConsoleTextAttribute(g_hConsoleOutput, 0xF); 
+
+ gotoxyWithFullwidth(26, 1); 
+
+ printf("???????????"); 
+
+ gotoxyWithFullwidth(26, 2); 
+
+ printf("?%8s?%8s?", "", ""); 
+
+ gotoxyWithFullwidth(26, 3); 
+
+ printf("?%8s?%8s?", "", ""); 
+
+ gotoxyWithFullwidth(26, 4); 
+
+ printf("?%8s?%8s?", "", ""); 
+
+ gotoxyWithFullwidth(26, 5); 
+
+ printf("?%8s?%8s?", "", ""); 
+
+ gotoxyWithFullwidth(26, 6); 
+
+ printf("???????????");*/ 
+
+ 
+
+ // Next, shown in corresponding color 
+
+ tetris = gs_uTetrisTable[manager->type[1]][manager->orientation[1]]; 
+
+ SetConsoleTextAttribute(g_hConsoleOutput, manager->type[1] | 8); 
+
+ for (i = 0; i < 16; ++i) 
+
+ { 
+
+ gotoxyWithFullwidth((i & 3) + 27, (i >> 2) + 2); 
+
+ ((tetris >> i) & 1) ? printf(" #") : printf("%2s", ""); 
+
+ } 
+
+ 
+
+ // Next, do not display color 
+
+ tetris = gs_uTetrisTable[manager->type[2]][manager->orientation[2]]; 
+
+ SetConsoleTextAttribute(g_hConsoleOutput, 8); 
+
+ for (i = 0; i < 16; ++i) 
+
+ { 
+
+ gotoxyWithFullwidth((i & 3) + 32, (i >> 2) + 2); 
+
+ ((tetris >> i) & 1) ? printf(" #") : printf("%2s", ""); 
+
+ } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// Show score information 
+
+void printScore(const TetrisManager *manager) 
+
+{ 
+
+ static const char *tetrisName = "ITLJZSO"; 
+
+ int8_t i; 
+
+ 
+
+ SetConsoleTextAttribute(g_hConsoleOutput, 0xE); 
+
+ 
+
+ gotoxyWithFullwidth(2, 2); 
+
+ printf("Score:%u", manager->score); 
+
+ 
+
+ gotoxyWithFullwidth(1, 6); 
+
+ printf("rows count:%u", manager->erasedTotal); 
+
+ for (i = 0; i < 4; ++i) 
+
+ { 
+
+ gotoxyWithFullwidth(2, 8 + i); 
+
+ printf("remove%d:%u", i + 1, manager->erasedCount[i]); 
+
+ } 
+
+ 
+
+ gotoxyWithFullwidth(1, 15); 
+
+ printf("squares count:%u", manager->tetrisTotal); 
+
+ 
+
+ for (i = 0; i < 7; ++i) 
+
+ { 
+
+ gotoxyWithFullwidth(2, 17 + i); 
+
+ printf("%cshape:%u", tetrisName[i], manager->tetrisCount[i]); 
+
+ } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// Show hints 
+
+void printPrompting() 
+
+{ 
+
+ SetConsoleTextAttribute(g_hConsoleOutput, 0xB); 
+
+ gotoxyWithFullwidth(26, 10); 
+
+ printf("Control:"); 
+
+ gotoxyWithFullwidth(27, 12); 
+
+ printf("Move left:  A/4"); 
+
+ gotoxyWithFullwidth(27, 13); 
+
+ printf("Move right: D/6"); 
+
+ gotoxyWithFullwidth(27, 14); 
+
+ printf("Move down:  S/2"); 
+
+ gotoxyWithFullwidth(27, 15); 
+
+ printf("Clockwise:  W/8"); 
+
+ gotoxyWithFullwidth(27, 16); 
+
+ printf("Counterclockwise rotation: 0"); 
+
+ gotoxyWithFullwidth(27, 17); 
+
+ printf("Landing directly: space"); 
+
+ gotoxyWithFullwidth(27, 18); 
+
+ printf("Pause the game: Enter"); 
+
+ gotoxyWithFullwidth(25, 23); 
+
+ printf("By: NEWPLAN @ UESTC"); 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// run game 
+
+void runGame(TetrisManager *manager, TetrisControl *control) 
+
+{ 
+
+ clock_t clockLast, clockNow; 
+
+ 
+
+ clockLast = clock(); // timing 
+
+ printTetrisPool(manager, control); // show game pool 
+
+ 
+
+ while (!manager->dead) // did not hang up 
+
+ { 
+
+ while (_kbhit()) //key pressed 
+
+ { 
+
+  keydownControl(manager, control, _getch()); // Handle keys 
+
+ } 
+
+ 
+
+ if (!control->pause) // not suspended 
+
+ { 
+
+  clockNow = clock(); // ?? 
+
+  // The interval between two timings exceeds 0.45 seconds 
+
+  if (clockNow - clockLast > 0.45F * CLOCKS_PER_SEC) 
+
+  { 
+
+  clockLast = clockNow; 
+
+  keydownControl(manager, control, 80); // move the block down 
+
+  } 
+
+ } 
+
+ } 
+
+} 
+
+ 
+
+// ============================================================================= 
+
+// Again 
+
+bool ifPlayAgain() 
+
+{ 
+
+ int ch; 
+
+ 
+
+ SetConsoleTextAttribute(g_hConsoleOutput, 0xF0); 
+
+ gotoxyWithFullwidth(15, 10); 
+
+ printf("game over"); 
+
+ gotoxyWithFullwidth(13, 11); 
+
+ printf("Press Y to replay, N to exit"); 
+
+ 
+
+ do 
+
+ { 
+
+ ch = _getch(); 
+
+ if (ch == 'Y' || ch == 'y') 
+
+ { 
+
+  return true; 
+
+ } 
+
+ else if (ch == 'N' || ch == 'n') 
+
+ { 
+
+  return false; 
+
+ } 
+
+ } while (1); 
+
+} 
